@@ -7,9 +7,9 @@ A Nix-packaged wrapper that runs ephemeral [Windows 10 LTSC](https://en.wikipedi
 Images are layered:
 
 ```
-system.qcow2          ← base OS install (read-only after setup)
-  └─ apps-<name>.qcow2   ← installed applications (one per app set)
-       └─ overlay-<ts>.qcow2  ← ephemeral session (auto-created, disposable)
+system.qcow2                   ← base OS install (read-only after setup)
+  └─ apps-<name>.qcow2         ← installed applications (one per app set)
+       └─ overlay-<ts>.qcow2   ← ephemeral session (auto-created, disposable)
 ```
 
 A SPICE display is served on `127.0.0.1:5900` and `remote-viewer` (from `virt-viewer`) opens automatically. Drag and drop lets you move files between host and guest.
@@ -32,8 +32,8 @@ Or add to a flake inputs:
 
 ### Requirements
 
-- Linux (x86_64 or aarch64) with KVM enabled
-- Nix with flakes (or plain `nix-build`)
+- Linux (x86-64 or AArch64) with KVM enabled
+- Nix with flakes
 - A Windows 10 LTSC installer ISO (you supply this yourself)
 
 ## Usage
