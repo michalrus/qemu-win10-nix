@@ -276,7 +276,10 @@ qemu_args=(
   -spice "port=$spice_port,addr=$spice_addr,disable-ticketing=on,image-compression=off,seamless-migration=on"
   -boot menu=on
   -virtfs "local,path=$shared_dir,mount_tag=$share_tag,security_model=none"
-  -drive "file=$disk_image,if=virtio,format=qcow2,cache=writeback,discard=unmap"
+  # Use IDE (AHCI via Q35 ICH9) instead of `virtio-blk`, as the `virtio-blk`
+  # driver crashes Windows during boot on Linux >= 6.19.11.
+  -drive "file=$disk_image,if=none,id=disk0,format=qcow2,cache=writeback,discard=unmap"
+  -device "ide-hd,drive=disk0"
 )
 
 if [ "$enable_net" = "true" ]; then
