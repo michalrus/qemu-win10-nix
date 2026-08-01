@@ -60,7 +60,7 @@ wait_for_spice() {
 }
 
 start_virtiofsd() {
-  rm -f -- "$virtiofsd_sock"
+  rm -f -- "$virtiofsd_sock" "$virtiofsd_pidfile"
   # `--sandbox none` runs virtiofsd as the invoking user with no mount/user
   # namespace. This VM is single-user and air-gapped, sharing only one
   # directory the user already owns, so it sidesteps the unprivileged-userns
@@ -228,6 +228,8 @@ esac
 mkdir -p "$data_dir" "$shared_dir"
 
 virtiofsd_sock="$data_dir/virtiofsd-$$.sock"
+# virtiofsd writes a lock file next to its socket and never removes it on exit.
+virtiofsd_pidfile="$virtiofsd_sock.pid"
 
 mem="${mem:-4G}"
 # `-m` reads a bare number as MiB, but a memory-backend `size=` reads it as
@@ -368,7 +370,7 @@ cleanup() {
     wait "$virtiofsd_pid" 2>/dev/null || true
   fi
   virtiofsd_pid=""
-  rm -f -- "$virtiofsd_sock" "$spice_sock"
+  rm -f -- "$virtiofsd_sock" "$virtiofsd_pidfile" "$spice_sock"
 
   exit "$status"
 }
