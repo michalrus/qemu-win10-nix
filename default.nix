@@ -9,6 +9,7 @@ pkgs.writeShellApplication rec {
     pkgs.qemu
     pkgs.util-linux
     pkgs.virt-viewer
+    pkgs.virtiofsd
   ];
   text =
     builtins.replaceStrings
@@ -32,8 +33,13 @@ pkgs.writeShellApplication rec {
         `--net` to enable user-mode (NAT) internet access; this option
         is only available with `--apps` and `--apps-rw`.
 
-        There's also a single shared directory between the host and guest for
-        file transfer.
+        A single directory is shared between host and guest over virtiofs
+        (mount tag `hostshare`), giving bidirectional file transfer. The guest
+        needs the `viofs` driver (on the virtio-win ISO) plus WinFsp; once its
+        service runs, the share appears as a drive letter. Host-to-guest
+        drag-and-drop also works via the SPICE agent, but SPICE has no
+        guest-to-host direction, so use the shared folder to copy files back
+        out.
 
         Use `--install-base` to perform the one-time base OS installation into
         `system.qcow2`. This mode also attaches a CD with virtio-win drivers;

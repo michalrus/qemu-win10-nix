@@ -7,9 +7,10 @@ data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/qemu-win10"
 system_image="$data_dir/system.qcow2"
 shared_dir="$data_dir/shared"
 guest_iso_default="@virtioWinIso@"
-share_tag="hostshare"
-spice_addr="127.0.0.1"
-spice_port="${QEMU_WIN10_SPICE_PORT:-5900}"
+share_tag="Host Share"
+# SPICE is served on a per-VM Unix socket, so any number of VMs coexist with no
+# port juggling.
+spice_sock="$data_dir/spice-$$.sock"
 spice_viewer="remote-viewer"
 
 usage() {
@@ -33,7 +34,7 @@ warning:
   --unsafe-base-rw boots system.qcow2 read-write for base setup only; using it later breaks apps-*.qcow2 images
 
 Images live under: $data_dir
-Shared folder: $shared_dir (mount tag: $share_tag)
+Shared folder: $shared_dir (mount tag: "$share_tag")
 EOF
 }
 
@@ -46,25 +47,42 @@ require_spice_viewer() {
   command -v "$spice_viewer" >/dev/null 2>&1 || die "missing $spice_viewer in PATH"
 }
 
-spice_port_in_use() {
-  if (exec 3<>"/dev/tcp/$spice_addr/$spice_port") 2>/dev/null; then
-    exec 3<&- 3>&-
-    return 0
-  fi
-  return 1
-}
-
 wait_for_spice() {
   local attempts=100
   while [ "$attempts" -gt 0 ]; do
-    if (exec 3<>"/dev/tcp/$spice_addr/$spice_port") 2>/dev/null; then
-      exec 3<&- 3>&-
+    if [ -S "$spice_sock" ]; then
       return 0
     fi
     attempts=$((attempts - 1))
     sleep 0.05
   done
   return 1
+}
+
+start_virtiofsd() {
+  rm -f -- "$virtiofsd_sock"
+  # `--sandbox none` runs virtiofsd as the invoking user with no mount/user
+  # namespace. This VM is single-user and air-gapped, sharing only one
+  # directory the user already owns, so it sidesteps the unprivileged-userns
+  # restrictions some hosts place on the default namespace sandbox.
+  virtiofsd \
+    --socket-path="$virtiofsd_sock" \
+    --shared-dir "$shared_dir" \
+    --tag "$share_tag" \
+    --sandbox none &
+  virtiofsd_pid=$!
+  local attempts=100
+  while [ "$attempts" -gt 0 ]; do
+    if [ -S "$virtiofsd_sock" ]; then
+      return 0
+    fi
+    if ! kill -0 "$virtiofsd_pid" 2>/dev/null; then
+      die "virtiofsd exited before creating its socket $virtiofsd_sock"
+    fi
+    attempts=$((attempts - 1))
+    sleep 0.05
+  done
+  die "timed out waiting for virtiofsd socket $virtiofsd_sock"
 }
 
 mode=""
@@ -209,7 +227,16 @@ esac
 
 mkdir -p "$data_dir" "$shared_dir"
 
+virtiofsd_sock="$data_dir/virtiofsd-$$.sock"
+
 mem="${mem:-4G}"
+# `-m` reads a bare number as MiB, but a memory-backend `size=` reads it as
+# bytes; normalize so the memfd backend always matches the guest RAM size.
+if [[ $mem =~ ^[0-9]+$ ]]; then
+  mem_backend_size="${mem}M"
+else
+  mem_backend_size="$mem"
+fi
 cpus="4"
 # TODO: detect host CPU features and adjust Hyper-V flags for portability.
 cpu_flags="host,hv_relaxed=on,hv_vapic=on,hv_spinlocks=0x1fff,hv_vpindex=on,hv_runtime=on,hv_time=on,hv_synic=on,hv_stimer=on,hv_frequencies=on,hv_tlbflush=on,hv_ipi=on,hv_evmcs=on,hv_avic=on"
@@ -255,9 +282,11 @@ fi
 
 qemu_args=(
   -enable-kvm
-  -machine q35
+  -machine "q35,memory-backend=mem"
   -cpu "$cpu_flags"
   -m "$mem"
+  # Back guest RAM with a shareable memfd so virtiofsd can map it (vhost-user).
+  -object "memory-backend-memfd,id=mem,size=$mem_backend_size,share=on"
   -smp "$cpus"
   -rtc base=localtime
   -vga none
@@ -273,9 +302,12 @@ qemu_args=(
   -audiodev "spice,id=audio0"
   -device ich9-intel-hda
   -device "hda-duplex,audiodev=audio0"
-  -spice "port=$spice_port,addr=$spice_addr,disable-ticketing=on,image-compression=off,seamless-migration=on"
+  -spice "unix=on,addr=$spice_sock,disable-ticketing=on,image-compression=off,seamless-migration=on"
   -boot menu=on
-  -virtfs "local,path=$shared_dir,mount_tag=$share_tag,security_model=none"
+  # Bidirectional host<->guest shared folder over virtiofs (tag "$share_tag").
+  # The guest needs the viofs driver (on the virtio-win ISO) plus WinFsp.
+  -chardev "socket,id=virtiofs0,path=$virtiofsd_sock"
+  -device "vhost-user-fs-pci,queue-size=1024,chardev=virtiofs0,tag=$share_tag"
   # Use IDE (AHCI via Q35 ICH9) instead of `virtio-blk`, as the `virtio-blk`
   # driver crashes Windows during boot on Linux >= 6.19.11.
   -drive "file=$disk_image,if=none,id=disk0,format=qcow2,cache=writeback,discard=unmap"
@@ -307,40 +339,52 @@ for iso_path in "${isos[@]}"; do
 done
 
 require_spice_viewer
-if spice_port_in_use; then
-  die "SPICE port ${spice_addr}:${spice_port} is already in use"
-fi
 
-qemu-system-x86_64 "${qemu_args[@]}" &
-qemu_pid=$!
 cleanup_done="false"
+qemu_pid=""
+virtiofsd_pid=""
 
 cleanup() {
+  local status=$?
   if [ "$cleanup_done" = "true" ]; then
     return
   fi
   cleanup_done="true"
-  local status=0
 
-  if [ -n "${qemu_pid:-}" ] && kill -0 "$qemu_pid" 2>/dev/null; then
+  if [ -n "$qemu_pid" ] && kill -0 "$qemu_pid" 2>/dev/null; then
     kill "$qemu_pid" 2>/dev/null || true
   fi
-  if [ -n "${qemu_pid:-}" ]; then
-    if ! wait "$qemu_pid" 2>/dev/null; then
-      status=$?
-    else
+  if [ -n "$qemu_pid" ]; then
+    if wait "$qemu_pid" 2>/dev/null; then
       status=0
+    else
+      status=$?
     fi
     qemu_pid=""
   fi
+
+  if [ -n "$virtiofsd_pid" ] && kill -0 "$virtiofsd_pid" 2>/dev/null; then
+    kill "$virtiofsd_pid" 2>/dev/null || true
+    wait "$virtiofsd_pid" 2>/dev/null || true
+  fi
+  virtiofsd_pid=""
+  rm -f -- "$virtiofsd_sock" "$spice_sock"
 
   exit "$status"
 }
 
 trap cleanup EXIT INT TERM
 
+start_virtiofsd
+
+rm -f -- "$spice_sock"
+qemu-system-x86_64 "${qemu_args[@]}" &
+qemu_pid=$!
+
+spice_uri="spice+unix://${spice_sock}"
+
 if wait_for_spice; then
-  "$spice_viewer" "spice://${spice_addr}:${spice_port}"
+  "$spice_viewer" "$spice_uri"
 else
-  echo >&2 "$prog: timed out waiting for SPICE on ${spice_addr}:${spice_port}"
+  echo >&2 "$prog: timed out waiting for SPICE at $spice_uri"
 fi

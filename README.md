@@ -12,7 +12,20 @@ system.qcow2                   ← base OS install (read-only after setup)
        └─ overlay-<ts>.qcow2   ← ephemeral session (auto-created, disposable)
 ```
 
-A SPICE display is served on `127.0.0.1:5900` and `remote-viewer` (from `virt-viewer`) opens automatically. Drag and drop lets you move files between host and guest.
+A SPICE display is served over a per-VM Unix socket and `remote-viewer` (from `virt-viewer`) opens automatically, so any number of VMs run at once without port conflicts. Drag-and-drop copies files from host to guest; a virtiofs shared folder (see [Sharing files](#sharing-files)) moves them both ways.
+
+## Sharing files
+
+A single host directory (`~/.local/share/qemu-win10/shared` by default, or `--share-dir <dir>`) is exported to the guest over **virtiofs** under the mount tag `hostshare`. This is how you move files **both** directions — in particular, how you get results back out of the guest.
+
+One-time guest setup (do it in an `--apps-rw <name>` session so it persists to the apps image):
+
+1. Install [**WinFsp**](https://winfsp.dev/). It is not on the virtio-win ISO, so either drag the installer into the guest (host→guest drag-and-drop works) or attach it with `--iso`.
+2. Install the **viofs** driver from the attached [virtio-win ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/) (`viofs\w10\amd64\viofs.inf` → right-click → Install), then start its service: `sc start VirtioFsSvc` (set `sc config VirtioFsSvc start=auto` to have it start on boot).
+
+The share then appears as a drive letter (typically `Z:`). Files you drop there in Windows appear in the host directory immediately, and vice versa.
+
+Why not just drag files out? SPICE has **no** guest-to-host file transfer, and its clipboard bridge only carries text and images (not file objects). So host→guest drag-and-drop works, but the shared folder is the way to copy finished files back to the host.
 
 ## Installation
 
@@ -100,10 +113,9 @@ qemu-win10 --help
 
 ## Configuration
 
-| Variable                | Default          | Description                                |
-| ----------------------- | ---------------- | ------------------------------------------ |
-| `XDG_DATA_HOME`         | `~/.local/share` | Parent of the `qemu-win10/` data directory |
-| `QEMU_WIN10_SPICE_PORT` | `5900`           | SPICE listener port                        |
+| Variable        | Default          | Description                                |
+| --------------- | ---------------- | ------------------------------------------ |
+| `XDG_DATA_HOME` | `~/.local/share` | Parent of the `qemu-win10/` data directory |
 
 ## License
 
