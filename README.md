@@ -21,7 +21,16 @@ A single host directory (`~/.local/share/qemu-win10/shared` by default, or `--sh
 One-time guest setup (do it in an `--apps-rw <name>` session so it persists to the apps image):
 
 1. Install [**WinFsp**](https://winfsp.dev/). It is not on the virtio-win ISO, so either drag the installer into the guest (host→guest drag-and-drop works) or attach it with `--iso`.
-2. Install the **viofs** driver from the attached [virtio-win ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/) (`viofs\w10\amd64\viofs.inf` → right-click → Install), then start its service: `sc start VirtioFsSvc` (set `sc config VirtioFsSvc start=auto` to have it start on boot).
+2. Install the **viofs** driver from the attached [virtio-win ISO](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.285-1/) (`viofs\w10\amd64\viofs.inf` → right-click → Install). Then, from an **Administrator** `cmd.exe`, configure its service to come up promptly on every boot and start it now (the space after each `=` is required by `sc`):
+
+   ```bat
+   sc config VirtioFsSvc start= auto depend= VirtioFsDrv
+   sc failure VirtioFsSvc reset= 0 actions= restart/2000/restart/2000/restart/2000
+   sc failureflag VirtioFsSvc 1
+   sc start VirtioFsSvc
+   ```
+
+   With a plain `start=auto`, `VirtioFsSvc` (a WinFsp user-mode file system) loses a boot race against WinFsp and the `VirtioFsDrv` device: it starts too early, fails, and Windows only retries it minutes later. `depend=` orders it after the driver, and the failure actions retry a failed start every 2 s — so `Z:` appears within seconds of boot instead.
 
 The share then appears as a drive letter (typically `Z:`). Files you drop there in Windows appear in the host directory immediately, and vice versa.
 
